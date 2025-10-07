@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Conda environment
+my_project_env/
+
+# Streamlit
+.streamlit/
+
+# VSCode
+.vscode/
+
+# Data files (如果您的CSV文件很大，不建议上传)
+# 如果您想忽略所有CSV文件，请取消下面的注释
+# *.csv

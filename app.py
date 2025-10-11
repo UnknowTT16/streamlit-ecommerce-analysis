@@ -22,6 +22,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from pandas.errors import SettingWithCopyWarning, DtypeWarning
 
+# (新增) 词云图和绘图库
+from wordcloud import WordCloud, STOPWORDS
+import matplotlib.pyplot as plt
+
 # (新增) 抑制特定的Pandas警告，美化输出
 warnings.filterwarnings('ignore', category=SettingWithCopyWarning)
 warnings.filterwarnings('ignore', category=DtypeWarning)
@@ -30,7 +34,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 # ==============================================================================
-# 2. 配置与辅助函数 (已净化)
+# 2. 配置与辅助函数
 # ==============================================================================
 @st.cache_data
 def convert_df_to_csv(df):
@@ -45,6 +49,17 @@ def load_uploaded_file(uploaded_file, dtype_spec=None):
         else: st.error(f"不支持的文件类型: {file_name}。"); return None
     except Exception as e:
         st.error(f"读取文件 '{file_name}' 时出错: {e}"); return None
+
+@st.cache_data
+def generate_wordcloud(text_series):
+    if text_series.empty: return None
+    full_text = " ".join(review for review in text_series.dropna())
+    wordcloud = WordCloud(stopwords=STOPWORDS, background_color="white", width=1200, height=600, colormap='viridis').generate(full_text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wordcloud, interpolation='bilinear')
+    ax.axis("off")
+    plt.tight_layout(pad=0)
+    return fig
 
 @st.cache_data
 def perform_semantic_matching(_amazon_df, _unesco_df):
@@ -160,7 +175,7 @@ def translate_page(_df, lang):
 # ==============================================================================
 
 st.set_page_config(layout="wide")
-st.title('📈 跨境选品与销售数据分析工具 (专业版)')
+st.title('📈 跨境选品与销售数据分析工具 ')
 
 with st.sidebar:
     st.header("📂 上传您的数据")
@@ -184,11 +199,9 @@ if uploaded_amazon and uploaded_unesco:
                 metadata_df = load_uploaded_file(uploaded_metadata, dtype_spec=dtype_spec)
                 if metadata_df is not None:
                     st.write(f"--- 发现元数据文件 '{uploaded_metadata.name}'，准备进行动态合并 ---")
-                    sales_key_col = next((col for col in ['ASIN', 'asin'] if col in amazon_df.columns), None)
-                    metadata_key_col = next((col for col in ['asin', 'ASIN'] if col in metadata_df.columns), None)
-                    desc_candidates = ['about_product', 'description', 'title', 'product_name', 'name', 'item_name']
-                    metadata_desc_col = next((col for col in desc_candidates if col in metadata_df.columns), None)
-                    
+                    sales_key_col, metadata_key_col = next((c for c in ['ASIN','asin'] if c in amazon_df.columns),None), next((c for c in ['asin','ASIN'] if c in metadata_df.columns),None)
+                    desc_candidates = ['about_product','description','title','product_name','name','item_name']
+                    metadata_desc_col = next((c for c in desc_candidates if c in metadata_df.columns), None)
                     if sales_key_col and metadata_key_col and metadata_desc_col:
                         st.write(f"✔️ 自动探测成功: 使用 '{sales_key_col}' 和 '{metadata_key_col}' 作为共同键。")
                         st.write(f"✔️ 将使用 '{metadata_desc_col}' 作为商品描述来源。")
@@ -196,45 +209,42 @@ if uploaded_amazon and uploaded_unesco:
                         metadata_df[metadata_key_col] = metadata_df[metadata_key_col].astype(str).str.strip()
                         metadata_subset = metadata_df[[metadata_key_col, metadata_desc_col]].drop_duplicates(subset=[metadata_key_col])
                         amazon_df = pd.merge(amazon_df, metadata_subset, left_on=sales_key_col, right_on=metadata_key_col, how='left')
-                        total_rows, matched_rows = len(amazon_df), amazon_df[metadata_desc_col].notna().sum()
-                        match_rate = (matched_rows / total_rows) * 100 if total_rows > 0 else 0
-                        st.write(f"📊 数据合并完成！匹配成功率: **{match_rate:.2f}%** ({matched_rows} / {total_rows} 条记录)。")
-                        fallback_text = amazon_df['Category'].fillna('') + ' ' + amazon_df.get('Style', pd.Series(index=amazon_df.index, dtype=str)).fillna('')
-                        amazon_df['text_for_matching'] = amazon_df[metadata_desc_col].fillna(fallback_text)
+                        total, matched = len(amazon_df), amazon_df[metadata_desc_col].notna().sum()
+                        rate = (matched/total)*100 if total > 0 else 0
+                        st.write(f"📊 数据合并完成！匹配成功率: **{rate:.2f}%** ({matched}/{total} 条记录)。")
+                        fallback = amazon_df['Category'].fillna('')+' '+amazon_df.get('Style',pd.Series(index=amazon_df.index,dtype=str)).fillna('')
+                        amazon_df['text_for_matching'] = amazon_df[metadata_desc_col].fillna(fallback)
                         st.write("--> 已为所有商品创建最终描述文本 'text_for_matching'。")
                     else:
                         st.warning("⚠️ 无法完成合并，将使用基础信息进行分析。")
                         amazon_df['text_for_matching'] = amazon_df['Category'].fillna('')
             else:
                 st.write("--- 未选择元数据文件，使用基础信息进行分析 ---")
-                amazon_df['text_for_matching'] = amazon_df['Category'].fillna('') + ' ' + amazon_df.get('Style', pd.Series(index=amazon_df.index, dtype=str)).fillna('')
+                amazon_df['text_for_matching'] = amazon_df['Category'].fillna('')+' '+amazon_df.get('Style',pd.Series(index=amazon_df.index,dtype=str)).fillna('')
 
-            for old, new in {'Total Sales':'Amount', 'Product':'SKU', 'Quantity':'Qty', 'Order_ID':'Order ID'}.items():
-                if old in amazon_df.columns: amazon_df.rename(columns={old:new}, inplace=True)
+            for old, new in {'Total Sales':'Amount','Product':'SKU','Quantity':'Qty','Order_ID':'Order ID'}.items():
+                if old in amazon_df.columns: amazon_df.rename(columns={old:new},inplace=True)
             
-            required_cols = ["Amount", "Category", "Date", "Status", "SKU", "Order ID", "Qty"]
-            missing_cols = [c for c in required_cols if c not in amazon_df.columns]
-            if missing_cols:
+            req_cols = ["Amount","Category","Date","Status","SKU","Order ID","Qty"]
+            missing = [c for c in req_cols if c not in amazon_df.columns]
+            if missing:
                 status.update(label="数据清洗失败!", state="error", expanded=True)
-                st.error(f"Amazon 文件中缺少关键列: {', '.join(missing_cols)}")
+                st.error(f"Amazon 文件中缺少关键列: {', '.join(missing)}")
             else:
                 amazon_df.dropna(subset=["Amount", "Category", "Date"], inplace=True)
-                try:
-                    amazon_df["Date"] = pd.to_datetime(amazon_df["Date"], format='%m-%d-%y')
-                except ValueError:
-                    amazon_df["Date"] = pd.to_datetime(amazon_df["Date"], errors='coerce')
-                
+                try: amazon_df["Date"] = pd.to_datetime(amazon_df["Date"], format='%m-%d-%y')
+                except ValueError: amazon_df["Date"] = pd.to_datetime(amazon_df["Date"], errors='coerce')
                 amazon_df["Amount"] = pd.to_numeric(amazon_df["Amount"], errors='coerce')
-                amazon_df = amazon_df[amazon_df["Status"].isin(["Shipped", "Shipped - Delivered to Buyer", "Completed", "Pending", "Cancelled"])]
-                amazon_df.dropna(subset=['Date', 'Amount', 'SKU', 'Order ID', 'Qty'], inplace=True)
-                all_categories = amazon_df['Category'].unique()
-                non遗_products = amazon_df[amazon_df['Category'].str.contains('|'.join(all_categories), case=False, na=False)]
+                amazon_df = amazon_df[amazon_df["Status"].isin(["Shipped","Shipped - Delivered to Buyer","Completed","Pending","Cancelled"])]
+                amazon_df.dropna(subset=['Date','Amount','SKU','Order ID','Qty'],inplace=True)
+                all_cats = amazon_df['Category'].unique()
+                non遗_products = amazon_df[amazon_df['Category'].str.contains('|'.join(all_cats), case=False, na=False)]
                 status.update(label="数据清洗与适配完成!", state="complete", expanded=False)
 
                 with st.spinner('正在进行初次数据预处理和模型计算，请稍候... (此过程仅在首次加载时运行)'):
                     cluster_summary, hot_products, cluster_error = perform_product_clustering(amazon_df)
-                    keywords = ['craft', 'textile', 'embroidery', 'weaving', 'costume', 'dress', 'heritage product', 'handicraft']
-                    relevant_unesco = unesco_df[unesco_df['Description EN'].str.contains('|'.join(keywords), case=False, na=False)]
+                    keywords = ['craft','textile','embroidery','weaving','costume','dress','heritage product','handicraft']
+                    relevant_unesco = unesco_df[unesco_df['Description EN'].str.contains('|'.join(keywords),case=False,na=False)]
                     
                     cosine_sim, unesco_titles = (None, None)
                     if not relevant_unesco.empty:
@@ -254,30 +264,27 @@ if uploaded_amazon and uploaded_unesco:
                     if cosine_sim is not None and unesco_titles is not None:
                         st.subheader("💡 场景一: 为您的热销品寻找文化灵感")
                         if hot_products is not None and not hot_products.empty:
-                            top_hot_products = hot_products.head(20)
-                            selected_sku = st.selectbox('从您的Top 20热销商品中选择一个:', top_hot_products['SKU'], format_func=lambda x: f"{x} (总销售额: {top_hot_products.loc[top_hot_products['SKU'] == x, 'total_amount'].iloc[0]:.2f})")
-                            product_indices = amazon_df.index[amazon_df['SKU'] == selected_sku].tolist()
-                            if product_indices:
-                                product_idx = product_indices[0]
-                                sim_scores = sorted(list(enumerate(cosine_sim[product_idx])), key=lambda x: x[1], reverse=True)
-                                top_5_indices = [i[0] for i in sim_scores[0:5]]
-                                st.write(f"与商品 **'{selected_sku}'** 最相关的5个非遗项目是:")
-                                for idx in top_5_indices:
-                                    st.markdown(f"- **{unesco_titles[idx]}** (相似度: {cosine_sim[product_idx, idx]:.4f})")
-                        else:
-                            st.warning("未能识别出热销商品列表。")
-                        
+                            top_hot = hot_products.head(20)
+                            sel_sku = st.selectbox('从您的Top 20热销商品中选择一个:', top_hot['SKU'], format_func=lambda x: f"{x} (总销售额: {top_hot.loc[top_hot['SKU']==x,'total_amount'].iloc[0]:.2f})")
+                            p_indices = amazon_df.index[amazon_df['SKU']==sel_sku].tolist()
+                            if p_indices:
+                                p_idx = p_indices[0]
+                                s_scores = sorted(list(enumerate(cosine_sim[p_idx])), key=lambda x:x[1], reverse=True)
+                                top_5 = [i[0] for i in s_scores[0:5]]
+                                st.write(f"与商品 **'{sel_sku}'** 最相关的5个非遗项目是:")
+                                for idx in top_5:
+                                    st.markdown(f"- **{unesco_titles[idx]}** (相似度: {cosine_sim[p_idx,idx]:.4f})")
+                        else: st.warning("未能识别出热销商品列表。")
                         st.subheader("🚀 场景二: 根据文化元素反向寻找潜力商品")
-                        selected_heritage = st.selectbox('从相关的非遗项目中选择一个:', unesco_titles)
-                        if selected_heritage:
-                            heritage_idx = unesco_titles.index(selected_heritage)
-                            sim_scores_heritage = sorted(list(enumerate(cosine_sim[:, heritage_idx])), key=lambda x: x[1], reverse=True)
-                            top_10_indices = [i[0] for i in sim_scores_heritage[:10]]
-                            st.write(f"与非遗项目 **'{selected_heritage}'** 最相似的Top 10在售商品是:")
-                            recommended_products = amazon_df.iloc[top_10_indices][['SKU', 'Amount', 'Category', 'text_for_matching']]
-                            st.dataframe(recommended_products)
-                    else:
-                        st.warning("未在UNESCO文件中找到相关的非遗项目。")
+                        sel_heritage = st.selectbox('从相关的非遗项目中选择一个:', unesco_titles)
+                        if sel_heritage:
+                            h_idx = unesco_titles.index(sel_heritage)
+                            s_scores_h = sorted(list(enumerate(cosine_sim[:,h_idx])),key=lambda x:x[1],reverse=True)
+                            top_10 = [i[0] for i in s_scores_h[:10]]
+                            st.write(f"与非遗项目 **'{sel_heritage}'** 最相似的Top 10在售商品是:")
+                            rec_prods = amazon_df.iloc[top_10][['SKU','Amount','Category','text_for_matching']]
+                            st.dataframe(rec_prods)
+                    else: st.warning("未在UNESCO文件中找到相关的非遗项目。")
 
                 with tab1:
                     st.header("销售额深度学习预测 (LSTM)")
@@ -293,17 +300,15 @@ if uploaded_amazon and uploaded_unesco:
 
                 with tab3:
                     st.header("热销商品聚类分析")
-                    if cluster_error:
-                        st.error(cluster_error)
+                    if cluster_error: st.error(cluster_error)
                     elif cluster_summary is not None and hot_products is not None:
                         st.subheader("各商品簇特征均值"); st.dataframe(cluster_summary)
                         st.subheader(f"🔥 热销商品列表 (共 {len(hot_products)} 个)")
-                        if len(hot_products) > 20:
+                        if len(hot_products)>20:
                             st.dataframe(hot_products.head(20))
-                            if st.checkbox('显示所有热销商品', key='show_all_hot_products'):
+                            if st.checkbox('显示所有热销商品',key='show_all_hot'):
                                 st.dataframe(hot_products)
-                        else:
-                            st.dataframe(hot_products)
+                        else: st.dataframe(hot_products)
                         st.download_button("下载热销商品列表 (CSV)", convert_df_to_csv(hot_products), "hot_products.csv", "text/csv")
 
                 with tab4:
@@ -311,19 +316,28 @@ if uploaded_amazon and uploaded_unesco:
                     if uploaded_reviews:
                         if sentiment_error:
                             st.error(sentiment_error)
+                        # (***关键修复点***) 使用正确的变量名 `sentiment_df`
                         elif sentiment_df is not None:
                             st.subheader("按星级筛选评论")
-                            rating_range = st.slider('选择星级范围:', 1, 5, (4, 5))
+                            rating_range = st.slider('选择星级范围:',1,5,(4,5))
                             min_r, max_r = rating_range
-                            filtered_reviews = sentiment_df[(sentiment_df['rating'] >= min_r) & (sentiment_df['rating'] <= max_r)]
+                            filtered_reviews = sentiment_df[(sentiment_df['rating']>=min_r)&(sentiment_df['rating']<=max_r)]
                             st.markdown(f"**显示 {len(filtered_reviews)} 条评分为 {min_r} 到 {max_r} 星的评论**")
-                            st.dataframe(filtered_reviews[['rating', 'review_text', 'sentiment']])
+                            st.dataframe(filtered_reviews[['rating','review_text','sentiment']])
                             st.subheader("情感分数统计")
                             avg_filtered = filtered_reviews['sentiment'].mean() if not filtered_reviews.empty else 0
                             avg_all = sentiment_df['sentiment'].mean()
-                            c1, c2 = st.columns(2)
+                            c1,c2 = st.columns(2)
                             c1.metric(f"所选评论 ({min_r}-{max_r} 星) 的平均情感分", f"{avg_filtered:.2f}")
                             c2.metric("所有评论的平均情感分", f"{avg_all:.2f}")
+                            
+                            st.subheader(f"⭐ {min_r}-{max_r} 星评论关键词词云图")
+                            if not filtered_reviews.empty:
+                                with st.spinner('正在根据您选择的评论生成词云图...'):
+                                    wordcloud_fig = generate_wordcloud(filtered_reviews['review_text'])
+                                    st.pyplot(wordcloud_fig)
+                            else:
+                                st.info("当前筛选范围内没有评论可用于生成词云图。")
                     else:
                         st.info("请在左侧上传评论文件 (支持 .csv 或 .parquet 格式)。")
 
@@ -331,14 +345,14 @@ if uploaded_amazon and uploaded_unesco:
                     st.header("UNESCO 非遗项目描述多语言翻译")
                     st.markdown("将英文描述分页显示，并按需进行即时翻译。")
                     page_size, total_rows = 20, len(unesco_df)
-                    total_pages = (total_rows // page_size) + (1 if total_rows % page_size > 0 else 0) if total_rows > 0 else 1
-                    page_num = st.number_input(f'选择页码 (共 {total_pages} 页)', min_value=1, max_value=total_pages, value=1)
-                    start, end = (page_num - 1) * page_size, page_num * page_size
+                    total_pages = (total_rows//page_size)+(1 if total_rows%page_size>0 else 0) if total_rows>0 else 1
+                    page_num = st.number_input(f'选择页码 (共 {total_pages} 页)',min_value=1,max_value=total_pages,value=1)
+                    start, end = (page_num-1)*page_size, page_num*page_size
                     unesco_page = unesco_df.iloc[start:end]
-                    st.markdown(f"**正在显示第 {page_num} 页, 第 {start + 1} 到 {min(end, total_rows)} 条记录**")
-                    display_df = unesco_page[['Title EN', 'Description EN']]
+                    st.markdown(f"**正在显示第 {page_num} 页, 第 {start+1} 到 {min(end,total_rows)} 条记录**")
+                    display_df = unesco_page[['Title EN','Description EN']]
                     with st.expander("🌍 点击这里展开翻译选项"):
-                        langs = {'中文':'zh-CN', '德语':'de', '法语':'fr', '西班牙语':'es', '日语':'ja', '俄语':'ru'}
+                        langs = {'中文':'zh-CN','德语':'de','法语':'fr','西班牙语':'es','日语':'ja','俄语':'ru'}
                         lang_name = st.selectbox('选择目标语言:', list(langs.keys()))
                         if lang_name:
                             lang_code = langs[lang_name]
@@ -348,9 +362,8 @@ if uploaded_amazon and uploaded_unesco:
                                         trans_page = translate_page(unesco_page, lang_code)
                                         trans_col = f'Description_{lang_code.upper()}'
                                         if trans_col in trans_page.columns:
-                                            display_df = trans_page[['Title EN', 'Description EN', trans_col]]
-                                    except Exception as e:
-                                        st.error(f"翻译失败: {e}")
+                                            display_df = trans_page[['Title EN','Description EN',trans_col]]
+                                    except Exception as e: st.error(f"翻译失败: {e}")
                     st.dataframe(display_df)
 else:
     st.info("👋 欢迎使用！请在左侧边栏上传 Amazon 和 UNESCO 的文件以开始分析。")
